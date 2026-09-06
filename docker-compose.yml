@@ -1,0 +1,53 @@
+version: '3.9'
+
+services:
+  # ── Backend replica 1 ────────────────────────────────────────────────────────
+  backend-1:
+    build:
+      context: ./backend
+    hostname: backend-1
+    container_name: surgeshield-backend-1
+    ports:
+      - "4001:4001"
+    env_file:
+      - ./backend/.env
+    environment:
+      PORT: "4001"
+      INSTANCE_ID: "instance-1"
+      PROMETHEUS_URL: "http://prometheus:9090"
+    restart: unless-stopped
+
+  # ── Backend replica 2 ────────────────────────────────────────────────────────
+  backend-2:
+    build:
+      context: ./backend
+    hostname: backend-2
+    container_name: surgeshield-backend-2
+    ports:
+      - "4002:4001"
+    env_file:
+      - ./backend/.env
+    environment:
+      PORT: "4001"
+      INSTANCE_ID: "instance-2"
+      PROMETHEUS_URL: "http://prometheus:9090"
+    restart: unless-stopped
+
+  # ── Prometheus ────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: surgeshield-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:

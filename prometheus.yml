@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Scrape both backend replicas individually so each appears as a separate instance.
+  - job_name: 'surgeshield-backend'
+    static_configs:
+      - targets:
+          - 'backend-1:4001'
+        labels:
+          instance: 'instance-1'
+      - targets:
+          - 'backend-2:4002'
+        labels:
+          instance: 'instance-2'
+    metrics_path: '/metrics'
+    scrape_interval: 15s
