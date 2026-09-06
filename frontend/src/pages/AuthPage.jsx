@@ -1,10 +1,13 @@
 import React, { useState } from 'react';
 import RegisterationForm from './RegisterationForm';
 import LoginForm from './LoginForm';
-import { Sparkles, Shield, Zap, Users, CheckCircle } from 'lucide-react';
+import { Sparkles, Shield, Zap, Users, CheckCircle, AlertCircle } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
-const AuthPage = ({ onLoginSuccess }) => {
+const AuthPage = () => {
   const [activeTab, setActiveTab] = useState('register'); // 'register' | 'login'
+  const [authRole, setAuthRole] = useState('user'); // 'user' | 'admin'
+  const { authError, setAuthError } = useAuth();
 
   return (
     <div className="min-h-screen bg-[#070b14] text-slate-100 flex flex-col justify-between relative selection:bg-indigo-500 selection:text-white overflow-hidden">
@@ -129,12 +132,36 @@ const AuthPage = ({ onLoginSuccess }) => {
 
         {/* Right Side: Authentication Card */}
         <div className="w-full max-w-md flex-1">
+          {authError && (
+            <div className="mb-4 flex items-start gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-medium">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{authError}</span>
+              <button
+                type="button"
+                onClick={() => setAuthError('')}
+                className="ml-auto text-rose-300 hover:text-white cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           {activeTab === 'register' ? (
-            <RegisterationForm onSwitchToLogin={() => setActiveTab('login')} />
+            <RegisterationForm
+              key={`register-${authRole}`}
+              initialRole={authRole}
+              onSwitchToLogin={(role) => {
+                if (role) setAuthRole(role);
+                setActiveTab('login');
+              }}
+            />
           ) : (
             <LoginForm
-              onSwitchToRegister={() => setActiveTab('register')}
-              onLoginSuccess={onLoginSuccess}
+              key={`login-${authRole}`}
+              initialRole={authRole}
+              onSwitchToRegister={(role) => {
+                if (role) setAuthRole(role);
+                setActiveTab('register');
+              }}
             />
           )}
         </div>

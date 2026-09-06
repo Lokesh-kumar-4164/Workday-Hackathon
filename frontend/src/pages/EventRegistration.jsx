@@ -152,7 +152,7 @@ export default function EventRegistration({ user, onLogout, events = [] }) {
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [seats, setSeats] = useState([]);
   const [selectedSeat, setSelectedSeat] = useState(null);
-  const [form, setForm] = useState({ name: '', email: user?.email ?? '' });
+  const [form, setForm] = useState({ name: user?.name ?? '', email: user?.email ?? '' });
   const [errors, setErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [success, setSuccess] = useState(null);
@@ -284,7 +284,7 @@ export default function EventRegistration({ user, onLogout, events = [] }) {
           {/* User info + logout */}
           <div className="flex items-center gap-3">
             {user?.email && (
-              <span className="hidden sm:block text-xs text-slate-400 truncate max-w-[200px]">{user.email}</span>
+              <span className="hidden sm:block text-xs text-slate-400 truncate max-w-[200px]">{user.name || user.email}</span>
             )}
             <button
               onClick={onLogout}
