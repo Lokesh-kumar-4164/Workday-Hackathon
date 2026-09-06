@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
 import { Mail, Lock, Eye, EyeOff, LogIn, CheckCircle2, AlertCircle, ArrowRight, ShieldCheck, User } from 'lucide-react';
-import { loginApi } from '../api/userApi';
+import { useAuth } from '../context/AuthContext';
+import GoogleAuthButton from '../components/GoogleAuthButton';
 
-const LoginForm = ({ onSwitchToRegister, onLoginSuccess }) => {
-  const [loginAs, setLoginAs] = useState('user'); // 'user' | 'admin'
+const LoginForm = ({ onSwitchToRegister, initialRole = 'user' }) => {
+  const { login, startGoogleAuth } = useAuth();
+  const [loginAs, setLoginAs] = useState(initialRole); // 'user' | 'admin'
 
   const [formData, setFormData] = useState({
     email: '',
@@ -67,14 +69,15 @@ const LoginForm = ({ onSwitchToRegister, onLoginSuccess }) => {
     setIsSubmitting(true);
     setApiError('');
     try {
-      const data = await loginApi({ email: formData.email, password: formData.password, role: loginAs });
+      await login({
+        email: formData.email,
+        password: formData.password,
+        role: loginAs,
+        rememberMe: formData.rememberMe,
+      });
       setIsSuccess(true);
-      if (onLoginSuccess) {
-        // Use role from server response if available, otherwise use the toggle value
-        onLoginSuccess({ email: formData.email, role: data?.user?.role ?? loginAs });
-      }
     } catch (err) {
-      setApiError(err.message || 'Login failed. Please check your credentials.');
+      setApiError(err.response?.data?.message || err.message || 'Login failed. Please check your credentials.');
     } finally {
       setIsSubmitting(false);
     }
@@ -177,6 +180,16 @@ const LoginForm = ({ onSwitchToRegister, onLoginSuccess }) => {
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-5">
+              <GoogleAuthButton
+                disabled={isSubmitting}
+                label={isAdmin ? 'Continue with Google as Admin' : 'Continue with Google'}
+                onClick={() => startGoogleAuth({ role: loginAs, rememberMe: formData.rememberMe })}
+              />
+              <div className="flex items-center gap-3">
+                <div className="h-px flex-1 bg-slate-800" />
+                <span className="text-[10px] uppercase tracking-widest text-slate-500">or email</span>
+                <div className="h-px flex-1 bg-slate-800" />
+              </div>
               {/* Email field */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-300 mb-2">
@@ -317,18 +330,18 @@ const LoginForm = ({ onSwitchToRegister, onLoginSuccess }) => {
               </button>
 
               {/* Switch to Register — only for regular user */}
-              {!isAdmin && (
-                <div className="pt-2 text-center text-xs text-slate-400">
-                  Don't have an account yet?{' '}
-                  <button
-                    type="button"
-                    onClick={onSwitchToRegister}
-                    className="text-indigo-400 hover:text-indigo-300 font-semibold transition-colors cursor-pointer underline underline-offset-4"
-                  >
-                    Create an account
-                  </button>
-                </div>
-              )}
+              <div className="pt-2 text-center text-xs text-slate-400">
+                {isAdmin ? 'Need an admin account?' : "Don't have an account yet?"}{' '}
+                <button
+                  type="button"
+                  onClick={() => onSwitchToRegister && onSwitchToRegister(isAdmin ? 'admin' : 'user')}
+                  className={`${
+                    isAdmin ? 'text-rose-400 hover:text-rose-300' : 'text-indigo-400 hover:text-indigo-300'
+                  } font-semibold transition-colors cursor-pointer underline underline-offset-4`}
+                >
+                  {isAdmin ? 'Register as Admin' : 'Create an account'}
+                </button>
+              </div>
             </form>
           </div>
         )}

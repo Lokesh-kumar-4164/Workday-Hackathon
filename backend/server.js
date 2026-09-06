@@ -1,6 +1,24 @@
-import express from 'express'
-import dotenv from 'dotenv'
-import connectDB from './config/db.js'
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';
+import morgan from 'morgan';
+import userRoutes from './routes/userApis.js';
 
+const app = express();
+const PORT = process.env.PORT || 5000;
+const frontendOrigin = process.env.FRONTEND_URL || 'http://localhost:5173';
 
-dotenv.config()
+app.use(cors({
+    origin: frontendOrigin,
+    credentials: true,
+}));
+app.use(morgan('dev'));
+app.use(cookieParser());
+app.use(express.json());
+
+app.use('/user', userRoutes);
+
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});
