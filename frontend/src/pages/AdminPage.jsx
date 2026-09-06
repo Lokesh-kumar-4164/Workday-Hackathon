@@ -2,8 +2,15 @@ import React, { useState } from 'react';
 import {
   Sparkles, LogOut, Plus, Trash2,
   Calendar, Clock, MapPin, Users, Search, X, CheckCircle2,
-  AlertCircle, LayoutGrid, ShieldCheck,
+  AlertCircle, LayoutGrid, ShieldCheck, ToggleLeft, ToggleRight,
+  Eye, Loader2,
 } from 'lucide-react';
+import {
+  createEventApi,
+  deleteEventApi,
+  getEventRegistrantsApi,
+  toggleEventAvailabilityApi,
+} from '../api/eventApi';
 
 const CATEGORIES = ['Technology', 'Design', 'Engineering', 'Leadership', 'Business', 'Other'];
 
@@ -17,35 +24,38 @@ const CATEGORY_COLORS = {
 };
 
 /* ── Helpers ── */
-function Spinner() {
+function Spinner({ className = 'h-4 w-4' }) {
   return (
-    <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+    <svg className={`animate-spin ${className}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
     </svg>
   );
 }
 
-/**
- * Format a date string (YYYY-MM-DD) → "October 15, 2026"
- */
 function formatDate(isoDate) {
   if (!isoDate) return '';
-  const [year, month, day] = isoDate.split('-').map(Number);
-  return new Date(year, month - 1, day).toLocaleDateString('en-US', {
-    month: 'long', day: 'numeric', year: 'numeric',
-  });
+  const d = new Date(isoDate);
+  return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 }
 
-/**
- * Format a time string (HH:MM) → "9:00 AM"
- */
 function formatTime(hhmm) {
   if (!hhmm) return '';
   const [hh, mm] = hhmm.split(':').map(Number);
   const ampm = hh >= 12 ? 'PM' : 'AM';
   const hour = hh % 12 || 12;
   return `${hour}:${String(mm).padStart(2, '0')} ${ampm}`;
+}
+
+function formatEventDate(event) {
+  if (!event.eventDate) return '';
+  const d = new Date(event.eventDate);
+  return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+}
+
+function formatEventTime(event) {
+  const parts = [event.startTime && formatTime(event.startTime), event.endTime && formatTime(event.endTime)].filter(Boolean);
+  return parts.join(' – ') || '—';
 }
 
 /* ── Stat Card ── */
@@ -60,8 +70,11 @@ function StatCard({ label, value, sub, color = 'text-indigo-400' }) {
 }
 
 /* ── Event Row ── */
-function EventRow({ event, onRemove }) {
+function EventRow({ event, onRemove, onToggle, onViewRegistrants, loadingId }) {
   const catCls = CATEGORY_COLORS[event.category] ?? CATEGORY_COLORS.Other;
+  const isActing = loadingId === event.id;
+  const registeredCount = event.capacity - event.availableSeats;
+
   return (
     <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center gap-4 hover:border-slate-700 transition-colors duration-150">
       <div className="flex-1 min-w-0">
@@ -69,17 +82,47 @@ function EventRow({ event, onRemove }) {
           <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${catCls}`}>
             {event.category}
           </span>
+          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+            event.available
+              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+              : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+          }`}>
+            {event.available ? 'Active' : 'Disabled'}
+          </span>
         </div>
-        <p className="text-sm font-bold text-slate-100 truncate">{event.name}</p>
+        <p className="text-sm font-bold text-slate-100 truncate">{event.title}</p>
         <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-1 text-xs text-slate-500">
-          <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{event.date}</span>
-          <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{event.time}</span>
+          <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{formatEventDate(event)}</span>
+          <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatEventTime(event)}</span>
           <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{event.location}</span>
-          <span className="flex items-center gap-1"><Users className="w-3 h-3" />{event.seats} seats</span>
+          <span className="flex items-center gap-1">
+            <Users className="w-3 h-3" />
+            {registeredCount}/{event.capacity} registered · {event.availableSeats} seats left
+          </span>
         </div>
       </div>
 
       <div className="flex items-center gap-2 shrink-0">
+        {/* View registrants */}
+        <button
+          onClick={() => onViewRegistrants(event)}
+          title="View registrants"
+          className="p-2 rounded-xl border border-slate-800 text-slate-500 hover:border-indigo-500/40 hover:text-indigo-400 hover:bg-indigo-500/10 transition-all duration-150 cursor-pointer"
+        >
+          <Eye className="w-4 h-4" />
+        </button>
+
+        {/* Toggle availability */}
+        <button
+          onClick={() => onToggle(event.id, !event.available)}
+          disabled={isActing}
+          title={event.available ? 'Disable event' : 'Enable event'}
+          className="p-2 rounded-xl border border-slate-800 text-slate-500 hover:border-amber-500/40 hover:text-amber-400 hover:bg-amber-500/10 transition-all duration-150 cursor-pointer disabled:opacity-50"
+        >
+          {isActing ? <Spinner /> : event.available ? <ToggleRight className="w-4 h-4" /> : <ToggleLeft className="w-4 h-4" />}
+        </button>
+
+        {/* Delete */}
         <button
           onClick={() => onRemove(event.id)}
           title="Remove event"
@@ -94,29 +137,23 @@ function EventRow({ event, onRemove }) {
 
 /* ── Add Event Form ── */
 function AddEventForm({ onAdd, onClose }) {
-  const empty = {
-    name: '',
-    date: '',      // YYYY-MM-DD from <input type="date">
-    startTime: '', // HH:MM from <input type="time">
-    endTime: '',   // HH:MM from <input type="time">
-    location: '',
-    seats: '',
-    category: 'Technology',
-  };
+  const empty = { title: '', date: '', startTime: '', endTime: '', location: '', seats: '', category: 'Technology', description: '' };
   const [form, setForm] = useState(empty);
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(false);
+  const [apiError, setApiError] = useState('');
 
   function handleChange(e) {
     const { name, value } = e.target;
     setForm(p => ({ ...p, [name]: value }));
     if (errors[name]) setErrors(p => ({ ...p, [name]: '' }));
+    if (apiError) setApiError('');
   }
 
   function validate() {
     const errs = {};
-    if (!form.name.trim()) errs.name = 'Event name is required';
+    if (!form.title.trim()) errs.title = 'Event name is required';
     if (!form.date) {
       errs.date = 'Date is required';
     } else {
@@ -136,29 +173,31 @@ function AddEventForm({ onAdd, onClose }) {
     return errs;
   }
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault();
     const errs = validate();
     if (Object.keys(errs).length) { setErrors(errs); return; }
 
     setSaving(true);
-    setTimeout(() => {
-      const readableDate = formatDate(form.date);
-      const readableTime = `${formatTime(form.startTime)} – ${formatTime(form.endTime)}`;
-      onAdd({
-        id: Date.now(),
-        name: form.name.trim(),
-        date: readableDate,
-        time: readableTime,
+    setApiError('');
+    try {
+      const result = await createEventApi({
+        title: form.title.trim(),
+        description: form.description.trim() || null,
         location: form.location.trim(),
-        seats: Number(form.seats),
+        eventDate: new Date(form.date).toISOString(),
+        startTime: form.startTime,
+        endTime: form.endTime,
         category: form.category,
-        available: true, // always available when added
+        capacity: Number(form.seats),
       });
-      setSaving(false);
       setDone(true);
-      setTimeout(onClose, 900);
-    }, 700);
+      setTimeout(() => { onAdd(result.event); onClose(); }, 900);
+    } catch (err) {
+      setApiError(err?.response?.data?.message || 'Failed to create event. Please try again.');
+    } finally {
+      setSaving(false);
+    }
   }
 
   const inputCls = (field) =>
@@ -166,18 +205,15 @@ function AddEventForm({ onAdd, onClose }) {
       errors[field] ? 'border-rose-500 focus:ring-rose-500/30' : 'border-slate-800 focus:border-indigo-500 focus:ring-indigo-500/30'
     } rounded-xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:ring-4 transition-all duration-200`;
 
-  // date picker: today onwards
   const todayISO = new Date().toISOString().split('T')[0];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
       <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-lg shadow-2xl shadow-indigo-950/50 relative overflow-hidden max-h-[90vh] overflow-y-auto">
-        {/* Glow */}
         <div className="absolute -top-24 -right-24 w-48 h-48 bg-indigo-500/15 rounded-full blur-3xl pointer-events-none" />
         <div className="absolute -bottom-24 -left-24 w-48 h-48 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
 
         <div className="relative p-6">
-          {/* Header */}
           <div className="flex items-center justify-between mb-6">
             <div>
               <h3 className="text-lg font-bold text-white">Add New Event</h3>
@@ -187,6 +223,13 @@ function AddEventForm({ onAdd, onClose }) {
               <X className="w-5 h-5" />
             </button>
           </div>
+
+          {apiError && (
+            <div className="mb-4 flex items-start gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{apiError}</span>
+            </div>
+          )}
 
           {done ? (
             <div className="text-center py-8 space-y-3">
@@ -202,8 +245,15 @@ function AddEventForm({ onAdd, onClose }) {
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
                   Event Name <span className="text-rose-400">*</span>
                 </label>
-                <input name="name" value={form.name} onChange={handleChange} placeholder="e.g. Annual Tech Summit" className={inputCls('name')} />
-                {errors.name && <p className="flex items-center gap-1 text-xs text-rose-400 mt-1"><AlertCircle className="w-3.5 h-3.5" />{errors.name}</p>}
+                <input name="title" value={form.title} onChange={handleChange} placeholder="e.g. Annual Tech Summit" className={inputCls('title')} />
+                {errors.title && <p className="flex items-center gap-1 text-xs text-rose-400 mt-1"><AlertCircle className="w-3.5 h-3.5" />{errors.title}</p>}
+              </div>
+
+              {/* Description */}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Description</label>
+                <textarea name="description" value={form.description} onChange={handleChange} placeholder="Optional event description…" rows={2}
+                  className="w-full px-4 py-2.5 bg-slate-950/60 border border-slate-800 focus:border-indigo-500 focus:ring-indigo-500/30 rounded-xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:ring-4 transition-all duration-200 resize-none" />
               </div>
 
               {/* Date */}
@@ -211,52 +261,27 @@ function AddEventForm({ onAdd, onClose }) {
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
                   Event Date <span className="text-rose-400">*</span>
                 </label>
-                <input
-                  type="date"
-                  name="date"
-                  min={todayISO}
-                  value={form.date}
-                  onChange={handleChange}
-                  className={`${inputCls('date')} [color-scheme:dark]`}
-                />
+                <input type="date" name="date" min={todayISO} value={form.date} onChange={handleChange} className={`${inputCls('date')} [color-scheme:dark]`} />
                 {errors.date && <p className="flex items-center gap-1 text-xs text-rose-400 mt-1"><AlertCircle className="w-3.5 h-3.5" />{errors.date}</p>}
               </div>
 
-              {/* Start + End Time */}
+              {/* Time */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-                    Start Time <span className="text-rose-400">*</span>
-                  </label>
-                  <input
-                    type="time"
-                    name="startTime"
-                    value={form.startTime}
-                    onChange={handleChange}
-                    className={`${inputCls('startTime')} [color-scheme:dark]`}
-                  />
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Start Time <span className="text-rose-400">*</span></label>
+                  <input type="time" name="startTime" value={form.startTime} onChange={handleChange} className={`${inputCls('startTime')} [color-scheme:dark]`} />
                   {errors.startTime && <p className="flex items-center gap-1 text-xs text-rose-400 mt-1"><AlertCircle className="w-3.5 h-3.5" />{errors.startTime}</p>}
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-                    End Time <span className="text-rose-400">*</span>
-                  </label>
-                  <input
-                    type="time"
-                    name="endTime"
-                    value={form.endTime}
-                    onChange={handleChange}
-                    className={`${inputCls('endTime')} [color-scheme:dark]`}
-                  />
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">End Time <span className="text-rose-400">*</span></label>
+                  <input type="time" name="endTime" value={form.endTime} onChange={handleChange} className={`${inputCls('endTime')} [color-scheme:dark]`} />
                   {errors.endTime && <p className="flex items-center gap-1 text-xs text-rose-400 mt-1"><AlertCircle className="w-3.5 h-3.5" />{errors.endTime}</p>}
                 </div>
               </div>
 
               {/* Location */}
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-                  Location <span className="text-rose-400">*</span>
-                </label>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Location <span className="text-rose-400">*</span></label>
                 <input name="location" value={form.location} onChange={handleChange} placeholder="e.g. Hall B, Convention Center" className={inputCls('location')} />
                 {errors.location && <p className="flex items-center gap-1 text-xs text-rose-400 mt-1"><AlertCircle className="w-3.5 h-3.5" />{errors.location}</p>}
               </div>
@@ -264,9 +289,7 @@ function AddEventForm({ onAdd, onClose }) {
               {/* Seats + Category */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-                    Seats <span className="text-rose-400">*</span>
-                  </label>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Seats <span className="text-rose-400">*</span></label>
                   <input name="seats" type="number" min="1" value={form.seats} onChange={handleChange} placeholder="e.g. 50" className={inputCls('seats')} />
                   {errors.seats && <p className="flex items-center gap-1 text-xs text-rose-400 mt-1"><AlertCircle className="w-3.5 h-3.5" />{errors.seats}</p>}
                 </div>
@@ -298,28 +321,128 @@ function AddEventForm({ onAdd, onClose }) {
   );
 }
 
+/* ── Registrants Modal ── */
+function RegistrantsModal({ event, onClose }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const result = await getEventRegistrantsApi(event.id);
+        setData(result);
+      } catch (err) {
+        setError(err?.response?.data?.message || 'Failed to load registrants.');
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [event.id]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-xl shadow-2xl max-h-[80vh] flex flex-col">
+        <div className="flex items-center justify-between p-6 border-b border-slate-800">
+          <div>
+            <h3 className="text-base font-bold text-white">Registrants</h3>
+            <p className="text-xs text-slate-400 mt-0.5 truncate max-w-xs">{event.title}</p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors cursor-pointer">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6">
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Spinner className="h-6 w-6 text-indigo-400" />
+            </div>
+          ) : error ? (
+            <div className="text-center py-8 text-rose-400 text-sm">{error}</div>
+          ) : data?.registrants?.length === 0 ? (
+            <div className="text-center py-12 text-slate-500">
+              <Users className="w-10 h-10 mx-auto mb-3 opacity-30" />
+              <p>No one has registered yet.</p>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-4 text-xs text-slate-500">
+                <span>{data.totalRegistered} registered</span>
+                <span>{data.availableSeats} seats remaining</span>
+              </div>
+              <div className="space-y-2">
+                {data.registrants.map((r) => (
+                  <div key={r.registrationId} className="flex items-center gap-3 bg-slate-950/60 border border-slate-800 rounded-xl p-3">
+                    <div className="w-8 h-8 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center text-xs font-bold shrink-0">
+                      {r.userName?.[0]?.toUpperCase() ?? '?'}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-slate-100 truncate">{r.userName}</p>
+                      <p className="text-xs text-slate-500 truncate">{r.userEmail}</p>
+                    </div>
+                    <span className="text-[10px] text-slate-600 shrink-0">
+                      {new Date(r.registeredAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Main Admin Page ── */
-export default function AdminPage({ user, onLogout, events, onAddEvent, onRemoveEvent }) {
+export default function AdminPage({ user, onLogout, events, eventsLoading, eventsError, onRefreshEvents }) {
   const [search, setSearch] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [confirmRemoveId, setConfirmRemoveId] = useState(null);
+  const [viewRegistrantsEvent, setViewRegistrantsEvent] = useState(null);
+  const [togglingId, setTogglingId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+  const [actionError, setActionError] = useState('');
 
   const filtered = events.filter(ev => {
     const q = search.toLowerCase();
     return (
-      ev.name.toLowerCase().includes(q) ||
-      ev.location.toLowerCase().includes(q) ||
-      ev.category.toLowerCase().includes(q)
+      ev.title?.toLowerCase().includes(q) ||
+      ev.location?.toLowerCase().includes(q) ||
+      ev.category?.toLowerCase().includes(q)
     );
   });
 
   const total = events.length;
-  const totalSeats = events.reduce((s, e) => s + e.seats, 0);
-  const categories = [...new Set(events.map(e => e.category))].length;
+  const totalSeats = events.reduce((s, e) => s + (e.capacity ?? 0), 0);
+  const categories = [...new Set(events.map(e => e.category))].filter(Boolean).length;
 
-  function handleConfirmRemove(id) {
-    onRemoveEvent(id);
-    setConfirmRemoveId(null);
+  async function handleToggle(id, newAvailable) {
+    setTogglingId(id);
+    setActionError('');
+    try {
+      await toggleEventAvailabilityApi(id, newAvailable);
+      await onRefreshEvents();
+    } catch (err) {
+      setActionError(err?.response?.data?.message || 'Failed to toggle event.');
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
+  async function handleConfirmRemove(id) {
+    setDeletingId(id);
+    setActionError('');
+    try {
+      await deleteEventApi(id);
+      setConfirmRemoveId(null);
+      await onRefreshEvents();
+    } catch (err) {
+      setActionError(err?.response?.data?.message || 'Failed to delete event.');
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   const Bg = () => (
@@ -335,7 +458,7 @@ export default function AdminPage({ user, onLogout, events, onAddEvent, onRemove
     <div className="min-h-screen bg-[#070b14] text-slate-100 relative overflow-x-hidden selection:bg-indigo-500 selection:text-white">
       <Bg />
 
-      {/* ── Navbar ── */}
+      {/* Navbar */}
       <header className="relative z-10 border-b border-slate-800/80 backdrop-blur-md bg-slate-950/60 sticky top-0">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -365,14 +488,14 @@ export default function AdminPage({ user, onLogout, events, onAddEvent, onRemove
 
       <div className="relative z-10 max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-8">
 
-        {/* ── Page Title ── */}
+        {/* Page Title */}
         <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
           <div>
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs font-medium mb-3">
               <ShieldCheck className="w-3.5 h-3.5" /> Admin Panel
             </div>
             <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">Event Management</h1>
-            <p className="text-slate-400 text-sm mt-1.5">Create and remove events visible to all registered users.</p>
+            <p className="text-slate-400 text-sm mt-1.5">Create, manage, and monitor events visible to all registered users.</p>
           </div>
           <button
             onClick={() => setShowAddForm(true)}
@@ -382,14 +505,23 @@ export default function AdminPage({ user, onLogout, events, onAddEvent, onRemove
           </button>
         </div>
 
-        {/* ── Stats ── */}
+        {/* Action error banner */}
+        {actionError && (
+          <div className="flex items-start gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{actionError}</span>
+            <button onClick={() => setActionError('')} className="ml-auto cursor-pointer text-rose-300 hover:text-white"><X className="w-3.5 h-3.5" /></button>
+          </div>
+        )}
+
+        {/* Stats */}
         <div className="grid grid-cols-3 gap-3">
           <StatCard label="Total Events" value={total} sub="published to users" />
           <StatCard label="Total Seats" value={totalSeats} sub="across all events" color="text-blue-400" />
           <StatCard label="Categories" value={categories} sub="event types" color="text-purple-400" />
         </div>
 
-        {/* ── Search ── */}
+        {/* Search */}
         <div className="relative">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
           <input
@@ -406,14 +538,24 @@ export default function AdminPage({ user, onLogout, events, onAddEvent, onRemove
           )}
         </div>
 
-        {/* ── Event List ── */}
+        {/* Event List */}
         <section>
           <p className="text-xs text-slate-500 font-medium mb-3">
             Showing {filtered.length} of {total} event{total !== 1 ? 's' : ''}
             {search && <span className="text-indigo-400"> for "{search}"</span>}
           </p>
 
-          {filtered.length === 0 ? (
+          {eventsLoading ? (
+            <div className="flex items-center justify-center py-16">
+              <Spinner className="h-8 w-8 text-indigo-400" />
+            </div>
+          ) : eventsError ? (
+            <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-8 text-center">
+              <AlertCircle className="w-8 h-8 text-rose-400 mx-auto mb-2" />
+              <p className="text-rose-400 font-medium">{eventsError}</p>
+              <button onClick={onRefreshEvents} className="mt-3 text-xs text-slate-400 hover:text-slate-200 underline cursor-pointer">Retry</button>
+            </div>
+          ) : filtered.length === 0 ? (
             <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-12 text-center">
               <LayoutGrid className="w-10 h-10 text-slate-700 mx-auto mb-3" />
               <p className="text-slate-400 font-medium">No events found</p>
@@ -426,6 +568,9 @@ export default function AdminPage({ user, onLogout, events, onAddEvent, onRemove
                   key={ev.id}
                   event={ev}
                   onRemove={(id) => setConfirmRemoveId(id)}
+                  onToggle={handleToggle}
+                  onViewRegistrants={setViewRegistrantsEvent}
+                  loadingId={togglingId}
                 />
               ))}
             </div>
@@ -438,15 +583,23 @@ export default function AdminPage({ user, onLogout, events, onAddEvent, onRemove
         &copy; {new Date().getFullYear()} SurgeShield · Admin Panel
       </footer>
 
-      {/* ── Add Event Modal ── */}
+      {/* Add Event Modal */}
       {showAddForm && (
         <AddEventForm
-          onAdd={(ev) => { onAddEvent(ev); setShowAddForm(false); }}
+          onAdd={() => { onRefreshEvents(); setShowAddForm(false); }}
           onClose={() => setShowAddForm(false)}
         />
       )}
 
-      {/* ── Confirm Remove Modal ── */}
+      {/* Registrants Modal */}
+      {viewRegistrantsEvent && (
+        <RegistrantsModal
+          event={viewRegistrantsEvent}
+          onClose={() => setViewRegistrantsEvent(null)}
+        />
+      )}
+
+      {/* Confirm Remove Modal */}
       {confirmRemoveId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl shadow-rose-950/30 text-center space-y-4">
@@ -457,18 +610,20 @@ export default function AdminPage({ user, onLogout, events, onAddEvent, onRemove
             <p className="text-slate-400 text-sm">
               This will permanently remove{' '}
               <span className="text-slate-200 font-semibold">
-                {events.find(e => e.id === confirmRemoveId)?.name}
+                {events.find(e => e.id === confirmRemoveId)?.title}
               </span>{' '}
-              from the list. This action cannot be undone.
+              and all its registrations. This action cannot be undone.
             </p>
             <div className="flex gap-3">
               <button onClick={() => setConfirmRemoveId(null)}
                 className="flex-1 py-2.5 rounded-xl border border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-600 text-sm font-semibold transition-colors cursor-pointer">
                 Cancel
               </button>
-              <button onClick={() => handleConfirmRemove(confirmRemoveId)}
-                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold transition-colors cursor-pointer shadow-md shadow-rose-600/20">
-                Remove
+              <button
+                onClick={() => handleConfirmRemove(confirmRemoveId)}
+                disabled={deletingId === confirmRemoveId}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold transition-colors cursor-pointer shadow-md shadow-rose-600/20 flex items-center justify-center gap-2 disabled:opacity-60">
+                {deletingId === confirmRemoveId ? <><Spinner /> Deleting...</> : 'Remove'}
               </button>
             </div>
           </div>
