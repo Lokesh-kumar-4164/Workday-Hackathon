@@ -1,6 +1,8 @@
 import {
+    boolean,
     integer,
     pgTable,
+    unique,
     varchar,
     text,
     timestamp,
@@ -42,7 +44,20 @@ export const eventsTable = pgTable("events", {
 
     eventDate: timestamp().notNull(),
 
+    // start/end time strings (HH:MM) for display
+    startTime: varchar({ length: 10 }),
+
+    endTime: varchar({ length: 10 }),
+
+    category: varchar({ length: 100 }).notNull().default("Other"),
+
     capacity: integer().notNull(),
+
+    // tracks remaining seats; decremented atomically on each registration
+    availableSeats: integer().notNull(),
+
+    // admin can toggle visibility
+    available: boolean().notNull().default(true),
 
     organizerId: integer()
         .notNull()
@@ -51,18 +66,25 @@ export const eventsTable = pgTable("events", {
 
 
 // REGISTRATIONS
-export const registrationsTable = pgTable("registrations", {
-    id: integer().primaryKey().generatedAlwaysAsIdentity(),
+export const registrationsTable = pgTable(
+    "registrations",
+    {
+        id: integer().primaryKey().generatedAlwaysAsIdentity(),
 
-    userId: integer()
-        .notNull()
-        .references(() => usersTable.id),
+        userId: integer()
+            .notNull()
+            .references(() => usersTable.id),
 
-    eventId: integer()
-        .notNull()
-        .references(() => eventsTable.id),
+        eventId: integer()
+            .notNull()
+            .references(() => eventsTable.id),
 
-    registeredAt: timestamp()
-        .notNull()
-        .defaultNow(),
-});
+        registeredAt: timestamp()
+            .notNull()
+            .defaultNow(),
+    },
+    (t) => ({
+        // prevent a user from registering for the same event twice
+        uniqueUserEvent: unique().on(t.userId, t.eventId),
+    }),
+);
