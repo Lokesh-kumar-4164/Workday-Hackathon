@@ -65,6 +65,22 @@ export const eventsTable = pgTable("events", {
 });
 
 
+export const apiMetricsTable = pgTable("api_metrics", {
+    id: integer().primaryKey().generatedAlwaysAsIdentity(),
+
+    total: integer().notNull().default(0),
+
+    successful: integer().notNull().default(0),
+
+    clientErrors: integer().notNull().default(0),
+
+    serverErrors: integer().notNull().default(0),
+
+    recordedAt: timestamp()
+        .notNull()
+        .defaultNow(),
+});
+
 // REGISTRATIONS
 export const registrationsTable = pgTable(
     "registrations",

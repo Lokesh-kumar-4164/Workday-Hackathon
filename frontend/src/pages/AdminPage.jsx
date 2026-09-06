@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Sparkles, LogOut, Plus, Trash2,
   Calendar, Clock, MapPin, Users, Search, X, CheckCircle2,
   AlertCircle, LayoutGrid, ShieldCheck, ToggleLeft, ToggleRight,
-  Eye, Loader2,
+  Eye, Activity, Cpu, TrendingUp, Zap, RefreshCw,
 } from 'lucide-react';
 import {
   createEventApi,
@@ -11,6 +11,7 @@ import {
   getEventRegistrantsApi,
   toggleEventAvailabilityApi,
 } from '../api/eventApi';
+import { fetchMetricsSummary, fetchMetricsRange } from '../api/metricsApi';
 
 const CATEGORIES = ['Technology', 'Design', 'Engineering', 'Leadership', 'Business', 'Other'];
 
@@ -65,6 +66,282 @@ function StatCard({ label, value, sub, color = 'text-indigo-400' }) {
       <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1">{label}</p>
       <p className={`text-3xl font-extrabold ${color}`}>{value}</p>
       {sub && <p className="text-xs text-slate-500 mt-1">{sub}</p>}
+    </div>
+  );
+}
+
+/* ── SVG Sparkline Chart ─────────────────────────────────────────────────────
+ *  Renders a minimal area sparkline from an array of {t, v} points.
+ *  No external chart library required.
+ */
+function SparklineChart({ series = [], height = 120, color = '#6366f1', label = '', yUnit = '' }) {
+  const svgRef = useRef(null);
+  const [tooltip, setTooltip] = useState(null);
+
+  // Flatten all values to compute global y-range
+  const allValues = series.flatMap(s => s.values.map(p => p.v)).filter(v => v != null);
+  const allTimes  = series.flatMap(s => s.values.map(p => p.t)).filter(t => t != null);
+
+  if (allValues.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-[120px] text-slate-600 text-xs">
+        No data yet — make some API requests then refresh
+      </div>
+    );
+  }
+
+  const minY = Math.min(...allValues);
+  const maxY = Math.max(...allValues);
+  const minT = Math.min(...allTimes);
+  const maxT = Math.max(...allTimes);
+  const rangeY = maxY - minY || 1;
+  const rangeT = maxT - minT || 1;
+
+  const W = 600;  // viewBox width
+  const H = height;
+  const PAD = 4;
+
+  const toX = t => PAD + ((t - minT) / rangeT) * (W - PAD * 2);
+  const toY = v => H - PAD - ((v - minY) / rangeY) * (H - PAD * 2);
+
+  // Colour palette for multiple series
+  const PALETTE = ['#6366f1', '#22d3ee', '#f59e0b', '#34d399', '#f87171', '#a78bfa'];
+
+  return (
+    <div className="relative">
+      {label && <p className="text-xs text-slate-500 mb-1">{label}</p>}
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full"
+        style={{ height }}
+        onMouseLeave={() => setTooltip(null)}
+        onMouseMove={e => {
+          const rect = svgRef.current?.getBoundingClientRect();
+          if (!rect) return;
+          const xRatio = (e.clientX - rect.left) / rect.width;
+          const tHover = minT + xRatio * rangeT;
+          // Find closest point across all series
+          let best = null;
+          let bestDist = Infinity;
+          series.forEach((s, si) => {
+            s.values.forEach(p => {
+              if (p.v == null) return;
+              const d = Math.abs(p.t - tHover);
+              if (d < bestDist) { bestDist = d; best = { ...p, label: s.label, si }; }
+            });
+          });
+          if (best) setTooltip(best);
+        }}
+      >
+        {/* Grid lines */}
+        {[0.25, 0.5, 0.75].map(f => (
+          <line key={f} x1={PAD} x2={W - PAD}
+            y1={PAD + f * (H - PAD * 2)} y2={PAD + f * (H - PAD * 2)}
+            stroke="#1e293b" strokeWidth="1" />
+        ))}
+
+        {series.map((s, si) => {
+          const pts = s.values.filter(p => p.v != null);
+          if (pts.length < 2) return null;
+          const lineColor = PALETTE[si % PALETTE.length];
+          const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${toX(p.t).toFixed(1)},${toY(p.v).toFixed(1)}`).join(' ');
+          const areaD = `${d} L${toX(pts[pts.length-1].t).toFixed(1)},${H} L${toX(pts[0].t).toFixed(1)},${H} Z`;
+          return (
+            <g key={s.label}>
+              <defs>
+                <linearGradient id={`grad-${si}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%"  stopColor={lineColor} stopOpacity="0.25" />
+                  <stop offset="100%" stopColor={lineColor} stopOpacity="0" />
+                </linearGradient>
+              </defs>
+              <path d={areaD} fill={`url(#grad-${si})`} />
+              <path d={d} fill="none" stroke={lineColor} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+            </g>
+          );
+        })}
+
+        {/* Tooltip crosshair */}
+        {tooltip && (
+          <>
+            <line
+              x1={toX(tooltip.t)} x2={toX(tooltip.t)}
+              y1={PAD} y2={H - PAD}
+              stroke="#ffffff30" strokeWidth="1" strokeDasharray="3,3"
+            />
+            <circle cx={toX(tooltip.t)} cy={toY(tooltip.v)} r={3}
+              fill={PALETTE[tooltip.si % PALETTE.length]} stroke="#fff" strokeWidth="1.5" />
+          </>
+        )}
+      </svg>
+
+      {/* Tooltip bubble */}
+      {tooltip && (
+        <div className="absolute top-2 right-2 bg-slate-950/90 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs pointer-events-none">
+          <p className="text-slate-400">{new Date(tooltip.t * 1000).toLocaleTimeString()}</p>
+          <p className="text-white font-semibold">{tooltip.v?.toFixed(3)}{yUnit} <span className="text-slate-500 font-normal">{tooltip.label}</span></p>
+        </div>
+      )}
+
+      {/* Legend for multi-series */}
+      {series.length > 1 && (
+        <div className="flex flex-wrap gap-3 mt-2">
+          {series.map((s, si) => (
+            <span key={s.label} className="flex items-center gap-1.5 text-[10px] text-slate-400">
+              <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: (['#6366f1','#22d3ee','#f59e0b','#34d399','#f87171','#a78bfa'])[si % 6] }} />
+              {s.label}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Monitoring Stat Card ── */
+function MetricCard({ icon: Icon, label, value, unit = '', color = 'text-indigo-400', bg = 'from-indigo-600/20 to-indigo-600/5' }) {
+  const isNull = value == null;
+  return (
+    <div className="bg-slate-900/80 backdrop-blur-sm border border-slate-800/80 rounded-2xl p-5 flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <div className={`p-1.5 rounded-lg bg-gradient-to-br ${bg}`}>
+          <Icon className={`w-3.5 h-3.5 ${color}`} />
+        </div>
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+      </div>
+      <p className={`text-2xl font-extrabold ${color} ${isNull ? 'opacity-40' : ''}`}>
+        {isNull ? '—' : `${value}${unit}`}
+      </p>
+    </div>
+  );
+}
+
+/* ── Monitoring Tab ───────────────────────────────────────────────────────── */
+function MonitoringTab() {
+  const [summary, setSummary] = useState(null);
+  const [range, setRange]     = useState(null);
+  const [source, setSource]   = useState(null);  // 'local' | 'prometheus'
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const REFRESH_MS = 30_000;
+
+  const load = useCallback(async () => {
+    setError('');
+    try {
+      const [s, r] = await Promise.all([
+        fetchMetricsSummary(),
+        fetchMetricsRange(3600, '30s'),
+      ]);
+      setSummary(s);
+      setRange(r);
+      setSource(r.source ?? 'local');
+      setLastUpdated(new Date());
+    } catch (err) {
+      setError(err?.response?.data?.message || 'Failed to load monitoring data.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [load]);
+
+  const pct = v => v != null ? `${(v * 100).toFixed(2)}%` : null;
+  const ms  = v => v != null ? `${v}` : null;
+  const rps = v => v != null ? `${v}` : null;
+
+  return (
+    <div className="space-y-8">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-medium mb-3">
+            <Activity className="w-3.5 h-3.5" /> Live Monitoring
+          </div>
+          <h2 className="text-2xl font-extrabold text-white tracking-tight">System Metrics</h2>
+          <div className="flex items-center gap-2 mt-1">
+            <p className="text-slate-400 text-sm">Auto-refreshes every 30 s</p>
+            {source && (
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+                source === 'prometheus'
+                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                  : 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20'
+              }`}>
+                {source === 'prometheus' ? '⬤ Prometheus' : '⬤ Local store'}
+              </span>
+            )}
+          </div>
+        </div>
+        <button
+          onClick={load}
+          className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-indigo-400 border border-slate-800 hover:border-indigo-500/40 rounded-xl px-3 py-2 transition-colors cursor-pointer"
+        >
+          <RefreshCw className="w-3.5 h-3.5" /> Refresh
+        </button>
+      </div>
+
+      {lastUpdated && (
+        <p className="text-[11px] text-slate-600 -mt-4">
+          Last updated {lastUpdated.toLocaleTimeString()}
+        </p>
+      )}
+
+      {/* Error banner */}
+      {error && (
+        <div className="flex items-start gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* Loading skeleton */}
+      {loading ? (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {Array.from({length: 7}).map((_, i) => (
+            <div key={i} className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 h-24 animate-pulse" />
+          ))}
+        </div>
+      ) : (
+        <>
+          {/* Stat cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            <MetricCard icon={Zap}        label="Requests / sec"   value={rps(summary?.requestsPerSec)}    unit=" req/s" color="text-indigo-400" bg="from-indigo-600/20 to-indigo-600/5" />
+            <MetricCard icon={Activity}   label="Avg Latency"      value={ms(summary?.avgLatencyMs)}       unit=" ms"    color="text-cyan-400"   bg="from-cyan-600/20 to-cyan-600/5" />
+            <MetricCard icon={TrendingUp} label="p95 Latency"      value={ms(summary?.p95LatencyMs)}       unit=" ms"    color="text-purple-400" bg="from-purple-600/20 to-purple-600/5" />
+            <MetricCard icon={AlertCircle} label="Error Rate"      value={pct(summary?.errorRate)}                       color="text-rose-400"   bg="from-rose-600/20 to-rose-600/5" />
+            <MetricCard icon={Eye}         label="4xx / sec"        value={rps(summary?.fourxxPerSec)}      unit=" req/s" color="text-amber-400"  bg="from-amber-600/20 to-amber-600/5" />
+            <MetricCard icon={AlertCircle} label="5xx / sec"        value={rps(summary?.fivexxPerSec)}      unit=" req/s" color="text-red-400"    bg="from-red-600/20 to-red-600/5" />
+            <MetricCard icon={Cpu}         label="Active Instances" value={summary?.activeInstances}                      color="text-emerald-400" bg="from-emerald-600/20 to-emerald-600/5" />
+          </div>
+
+          {/* Charts */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-5">
+              <p className="text-sm font-bold text-slate-200 mb-3">Request Rate (req/s)</p>
+              <SparklineChart series={range?.requestRate ?? []} yUnit=" req/s" />
+            </div>
+
+            <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-5">
+              <p className="text-sm font-bold text-slate-200 mb-3">Latency (ms)</p>
+              <SparklineChart series={range?.latencyMs ?? []} yUnit=" ms" color="#22d3ee" />
+            </div>
+
+            <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-5">
+              <p className="text-sm font-bold text-slate-200 mb-3">Error Rate</p>
+              <SparklineChart series={range?.errorRate ?? []} yUnit="" color="#f87171" />
+            </div>
+
+            <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-5">
+              <p className="text-sm font-bold text-slate-200 mb-3">Requests by Instance</p>
+              <SparklineChart series={range?.byInstance ?? []} yUnit=" req/s" color="#34d399" />
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -397,6 +674,7 @@ function RegistrantsModal({ event, onClose }) {
 
 /* ── Main Admin Page ── */
 export default function AdminPage({ user, onLogout, events, eventsLoading, eventsError, onRefreshEvents }) {
+  const [activeTab, setActiveTab] = useState('events'); // 'events' | 'monitoring'
   const [search, setSearch] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [confirmRemoveId, setConfirmRemoveId] = useState(null);
@@ -473,6 +751,30 @@ export default function AdminPage({ user, onLogout, events, eventsLoading, event
             </div>
           </div>
 
+          {/* Tab switcher */}
+          <div className="flex items-center gap-1 bg-slate-900/60 border border-slate-800 rounded-xl p-1">
+            <button
+              onClick={() => setActiveTab('events')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'events'
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" /> Events
+            </button>
+            <button
+              onClick={() => setActiveTab('monitoring')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'monitoring'
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Activity className="w-3.5 h-3.5" /> Monitoring
+            </button>
+          </div>
+
           <div className="flex items-center gap-3">
             <div className="hidden sm:flex items-center gap-1.5 text-xs text-slate-400 bg-slate-900/60 border border-slate-800 px-3 py-1.5 rounded-xl">
               <ShieldCheck className="w-3.5 h-3.5 text-indigo-400" />
@@ -488,94 +790,100 @@ export default function AdminPage({ user, onLogout, events, eventsLoading, event
 
       <div className="relative z-10 max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-8">
 
-        {/* Page Title */}
-        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-          <div>
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs font-medium mb-3">
-              <ShieldCheck className="w-3.5 h-3.5" /> Admin Panel
+        {activeTab === 'monitoring' ? (
+          <MonitoringTab />
+        ) : (
+          <>
+            {/* Page Title */}
+            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+              <div>
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs font-medium mb-3">
+                  <ShieldCheck className="w-3.5 h-3.5" /> Admin Panel
+                </div>
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">Event Management</h1>
+                <p className="text-slate-400 text-sm mt-1.5">Create, manage, and monitor events visible to all registered users.</p>
+              </div>
+              <button
+                onClick={() => setShowAddForm(true)}
+                className="flex items-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-indigo-500 via-indigo-600 to-blue-600 hover:from-indigo-600 hover:to-blue-700 text-white text-sm font-semibold shadow-lg shadow-indigo-600/30 transition-all duration-200 cursor-pointer shrink-0"
+              >
+                <Plus className="w-4 h-4" /> Add Event
+              </button>
             </div>
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">Event Management</h1>
-            <p className="text-slate-400 text-sm mt-1.5">Create, manage, and monitor events visible to all registered users.</p>
-          </div>
-          <button
-            onClick={() => setShowAddForm(true)}
-            className="flex items-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-indigo-500 via-indigo-600 to-blue-600 hover:from-indigo-600 hover:to-blue-700 text-white text-sm font-semibold shadow-lg shadow-indigo-600/30 transition-all duration-200 cursor-pointer shrink-0"
-          >
-            <Plus className="w-4 h-4" /> Add Event
-          </button>
-        </div>
 
-        {/* Action error banner */}
-        {actionError && (
-          <div className="flex items-start gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <span>{actionError}</span>
-            <button onClick={() => setActionError('')} className="ml-auto cursor-pointer text-rose-300 hover:text-white"><X className="w-3.5 h-3.5" /></button>
-          </div>
+            {/* Action error banner */}
+            {actionError && (
+              <div className="flex items-start gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{actionError}</span>
+                <button onClick={() => setActionError('')} className="ml-auto cursor-pointer text-rose-300 hover:text-white"><X className="w-3.5 h-3.5" /></button>
+              </div>
+            )}
+
+            {/* Stats */}
+            <div className="grid grid-cols-3 gap-3">
+              <StatCard label="Total Events" value={total} sub="published to users" />
+              <StatCard label="Total Seats" value={totalSeats} sub="across all events" color="text-blue-400" />
+              <StatCard label="Categories" value={categories} sub="event types" color="text-purple-400" />
+            </div>
+
+            {/* Search */}
+            <div className="relative">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+              <input
+                type="text"
+                placeholder="Search by name, location, or category…"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="w-full pl-10 pr-10 py-2.5 bg-slate-900/60 border border-slate-800 focus:border-indigo-500 focus:ring-indigo-500/30 rounded-xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:ring-4 transition-all duration-200"
+              />
+              {search && (
+                <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {/* Event List */}
+            <section>
+              <p className="text-xs text-slate-500 font-medium mb-3">
+                Showing {filtered.length} of {total} event{total !== 1 ? 's' : ''}
+                {search && <span className="text-indigo-400"> for "{search}"</span>}
+              </p>
+
+              {eventsLoading ? (
+                <div className="flex items-center justify-center py-16">
+                  <Spinner className="h-8 w-8 text-indigo-400" />
+                </div>
+              ) : eventsError ? (
+                <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-8 text-center">
+                  <AlertCircle className="w-8 h-8 text-rose-400 mx-auto mb-2" />
+                  <p className="text-rose-400 font-medium">{eventsError}</p>
+                  <button onClick={onRefreshEvents} className="mt-3 text-xs text-slate-400 hover:text-slate-200 underline cursor-pointer">Retry</button>
+                </div>
+              ) : filtered.length === 0 ? (
+                <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-12 text-center">
+                  <LayoutGrid className="w-10 h-10 text-slate-700 mx-auto mb-3" />
+                  <p className="text-slate-400 font-medium">No events found</p>
+                  <p className="text-slate-600 text-sm mt-1">Try adjusting your search or add a new event.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {filtered.map(ev => (
+                    <EventRow
+                      key={ev.id}
+                      event={ev}
+                      onRemove={(id) => setConfirmRemoveId(id)}
+                      onToggle={handleToggle}
+                      onViewRegistrants={setViewRegistrantsEvent}
+                      loadingId={togglingId}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
         )}
-
-        {/* Stats */}
-        <div className="grid grid-cols-3 gap-3">
-          <StatCard label="Total Events" value={total} sub="published to users" />
-          <StatCard label="Total Seats" value={totalSeats} sub="across all events" color="text-blue-400" />
-          <StatCard label="Categories" value={categories} sub="event types" color="text-purple-400" />
-        </div>
-
-        {/* Search */}
-        <div className="relative">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
-          <input
-            type="text"
-            placeholder="Search by name, location, or category…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="w-full pl-10 pr-10 py-2.5 bg-slate-900/60 border border-slate-800 focus:border-indigo-500 focus:ring-indigo-500/30 rounded-xl text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:ring-4 transition-all duration-200"
-          />
-          {search && (
-            <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer">
-              <X className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-
-        {/* Event List */}
-        <section>
-          <p className="text-xs text-slate-500 font-medium mb-3">
-            Showing {filtered.length} of {total} event{total !== 1 ? 's' : ''}
-            {search && <span className="text-indigo-400"> for "{search}"</span>}
-          </p>
-
-          {eventsLoading ? (
-            <div className="flex items-center justify-center py-16">
-              <Spinner className="h-8 w-8 text-indigo-400" />
-            </div>
-          ) : eventsError ? (
-            <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-8 text-center">
-              <AlertCircle className="w-8 h-8 text-rose-400 mx-auto mb-2" />
-              <p className="text-rose-400 font-medium">{eventsError}</p>
-              <button onClick={onRefreshEvents} className="mt-3 text-xs text-slate-400 hover:text-slate-200 underline cursor-pointer">Retry</button>
-            </div>
-          ) : filtered.length === 0 ? (
-            <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-12 text-center">
-              <LayoutGrid className="w-10 h-10 text-slate-700 mx-auto mb-3" />
-              <p className="text-slate-400 font-medium">No events found</p>
-              <p className="text-slate-600 text-sm mt-1">Try adjusting your search or add a new event.</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {filtered.map(ev => (
-                <EventRow
-                  key={ev.id}
-                  event={ev}
-                  onRemove={(id) => setConfirmRemoveId(id)}
-                  onToggle={handleToggle}
-                  onViewRegistrants={setViewRegistrantsEvent}
-                  loadingId={togglingId}
-                />
-              ))}
-            </div>
-          )}
-        </section>
       </div>
 
       {/* Footer */}
