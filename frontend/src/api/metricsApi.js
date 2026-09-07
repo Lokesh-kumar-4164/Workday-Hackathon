@@ -34,3 +34,30 @@ export const fetchMetricsRange = async (windowSeconds = 3600, step = '15s') => {
     });
     return data;
 };
+
+/**
+ * Fetch Redis rate limiter real-time status, health, active buckets, and stats.
+ */
+export const fetchRateLimitStatusApi = async () => {
+    const { data } = await api.get('/admin/ratelimit/status');
+    return data;
+};
+
+/**
+ * Update Redis rate limiter configuration.
+ * @param {{ maxTokens: number, refillRate: number }} config
+ */
+export const updateRateLimitConfigApi = async (config) => {
+    const { data } = await api.post('/admin/ratelimit/config', config);
+    return data;
+};
+
+/**
+ * Reset an IP's rate limit bucket or all buckets.
+ * @param {string|null} ip
+ * @param {boolean} [all=false]
+ */
+export const resetRateLimitApi = async (ip = null, all = false) => {
+    const { data } = await api.post('/admin/ratelimit/reset', { ip, all });
+    return data;
+};

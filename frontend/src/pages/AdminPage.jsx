@@ -4,6 +4,7 @@ import {
   Calendar, Clock, MapPin, Users, Search, X, CheckCircle2,
   AlertCircle, LayoutGrid, ShieldCheck, ToggleLeft, ToggleRight,
   Eye, Activity, Cpu, TrendingUp, Zap, RefreshCw,
+  Shield, ShieldAlert, Sliders, Database, RotateCcw, Server,
 } from 'lucide-react';
 import {
   createEventApi,
@@ -11,7 +12,13 @@ import {
   getEventRegistrantsApi,
   toggleEventAvailabilityApi,
 } from '../api/eventApi';
-import { fetchMetricsSummary, fetchMetricsRange } from '../api/metricsApi';
+import {
+  fetchMetricsSummary,
+  fetchMetricsRange,
+  fetchRateLimitStatusApi,
+  updateRateLimitConfigApi,
+  resetRateLimitApi,
+} from '../api/metricsApi';
 
 const CATEGORIES = ['Technology', 'Design', 'Engineering', 'Leadership', 'Business', 'Other'];
 
@@ -343,6 +350,552 @@ function MonitoringTab() {
         </>
       )}
     </div>
+  );
+}
+
+/* ── Rate Limiter Tab ──────────────────────────────────────────────────────── */
+function RateLimiterTab() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState('');
+  const [lastUpdated, setLastUpdated] = useState(null);
+
+  // Config editor state
+  const [maxTokens, setMaxTokens] = useState(10);
+  const [refillRate, setRefillRate] = useState(1);
+  const [savingConfig, setSavingConfig] = useState(false);
+  const [configSuccess, setConfigSuccess] = useState('');
+  const [configError, setConfigError] = useState('');
+
+  // Reset state
+  const [resettingIp, setResettingIp] = useState(null);
+  const [resetAllLoading, setResetAllLoading] = useState(false);
+  const [actionSuccess, setActionSuccess] = useState('');
+
+  // Search filter for IP table
+  const [searchIp, setSearchIp] = useState('');
+
+  const load = useCallback(async (isBackground = false) => {
+    if (!isBackground) setRefreshing(true);
+    setError('');
+    try {
+      const res = await fetchRateLimitStatusApi();
+      setData(res);
+      if (res.config && !isBackground) {
+        setMaxTokens(res.config.maxTokens);
+        setRefillRate(res.config.refillRate);
+      }
+      setLastUpdated(new Date());
+    } catch (err) {
+      setError(err?.response?.data?.message || 'Failed to connect to Redis rate limiter.');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const interval = setInterval(() => load(true), 5000);
+    return () => clearInterval(interval);
+  }, [load]);
+
+  const handleSaveConfig = async (e) => {
+    e.preventDefault();
+    setSavingConfig(true);
+    setConfigSuccess('');
+    setConfigError('');
+    try {
+      const res = await updateRateLimitConfigApi({
+        maxTokens: Number(maxTokens),
+        refillRate: Number(refillRate),
+      });
+      setConfigSuccess(res.message || 'Rate limit policy updated live in Redis!');
+      setTimeout(() => setConfigSuccess(''), 4000);
+      load(true);
+    } catch (err) {
+      setConfigError(err?.response?.data?.message || 'Failed to update rate limit configuration.');
+    } finally {
+      setSavingConfig(false);
+    }
+  };
+
+  const handleApplyPreset = (presetTokens, presetRefill) => {
+    setMaxTokens(presetTokens);
+    setRefillRate(presetRefill);
+  };
+
+  const handleResetIp = async (ip) => {
+    setResettingIp(ip);
+    setActionSuccess('');
+    try {
+      const res = await resetRateLimitApi(ip);
+      setActionSuccess(res.message || `Rate limit reset for ${ip}`);
+      setTimeout(() => setActionSuccess(''), 4000);
+      load(true);
+    } catch (err) {
+      setError(err?.response?.data?.message || 'Failed to reset IP bucket.');
+    } finally {
+      setResettingIp(null);
+    }
+  };
+
+  const handleResetAll = async () => {
+    if (!window.confirm('Are you sure you want to reset all active rate-limiting token buckets?')) return;
+    setResetAllLoading(true);
+    setActionSuccess('');
+    try {
+      const res = await resetRateLimitApi(null, true);
+      setActionSuccess(res.message || 'All rate limit buckets reset.');
+      setTimeout(() => setActionSuccess(''), 4000);
+      load(true);
+    } catch (err) {
+      setError(err?.response?.data?.message || 'Failed to reset all buckets.');
+    } finally {
+      setResetAllLoading(false);
+    }
+  };
+
+  const filteredBuckets = (data?.activeBuckets ?? []).filter(b =>
+    !searchIp || b.ip.toLowerCase().includes(searchIp.toLowerCase())
+  );
+
+  return (
+    <div className="space-y-8">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium mb-3">
+            <Shield className="w-3.5 h-3.5" /> Redis Token Bucket Shield
+          </div>
+          <h2 className="text-2xl font-extrabold text-white tracking-tight">Rate Limiter & Shield</h2>
+          <div className="flex items-center gap-2 mt-1">
+            <p className="text-slate-400 text-sm">Protected by Upstash Redis cluster · Auto-polls every 5s</p>
+            {data?.connected ? (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-emerald-500/10 text-emerald-400 border-emerald-500/20 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                Connected ({data.pingMs}ms)
+              </span>
+            ) : (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-rose-500/10 text-rose-400 border-rose-500/20">
+                Disconnected
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={handleResetAll}
+            disabled={resetAllLoading || (data?.activeBuckets?.length ?? 0) === 0}
+            className="flex items-center gap-1.5 text-xs text-rose-400 hover:text-rose-300 border border-rose-500/30 hover:border-rose-500/60 bg-rose-500/10 rounded-xl px-3 py-2 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${resetAllLoading ? 'animate-spin' : ''}`} />
+            Reset All Buckets
+          </button>
+          <button
+            onClick={() => load(false)}
+            disabled={refreshing}
+            className="flex items-center gap-1.5 text-xs text-slate-300 hover:text-white border border-slate-800 hover:border-indigo-500/40 bg-slate-900/60 rounded-xl px-3 py-2 transition-colors cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin text-indigo-400' : ''}`} />
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {lastUpdated && (
+        <p className="text-[11px] text-slate-600 -mt-4">
+          Last updated {lastUpdated.toLocaleTimeString()}
+        </p>
+      )}
+
+      {/* Success banner */}
+      {actionSuccess && (
+        <div className="flex items-start gap-2 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs animate-in fade-in">
+          <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>{actionSuccess}</span>
+        </div>
+      )}
+
+      {/* Error banner */}
+      {error && (
+        <div className="flex items-start gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 h-24 animate-pulse" />
+          ))}
+        </div>
+      ) : (
+        <>
+          {/* Stat Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <MetricCard
+              icon={Database}
+              label="Redis Protected Calls"
+              value={data?.stats?.total ?? 0}
+              unit=" reqs"
+              color="text-indigo-400"
+              bg="from-indigo-600/20 to-indigo-600/5"
+            />
+            <MetricCard
+              icon={ShieldCheck}
+              label="Allowed Requests"
+              value={data?.stats?.allowed ?? 0}
+              unit=""
+              color="text-emerald-400"
+              bg="from-emerald-600/20 to-emerald-600/5"
+            />
+            <MetricCard
+              icon={ShieldAlert}
+              label="Throttled (429) Calls"
+              value={data?.stats?.blocked ?? 0}
+              unit={` (${data?.stats?.blockedRate ?? 0}%)`}
+              color="text-rose-400"
+              bg="from-rose-600/20 to-rose-600/5"
+            />
+            <MetricCard
+              icon={Users}
+              label="Active Client Buckets"
+              value={data?.activeBuckets?.length ?? 0}
+              unit=" IPs"
+              color="text-amber-400"
+              bg="from-amber-600/20 to-amber-600/5"
+            />
+          </div>
+
+          {/* Grid of Dynamic Config and Connection Info */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Live Policy Config Panel */}
+            <div className="lg:col-span-2 bg-slate-900/80 backdrop-blur-sm border border-slate-800/80 rounded-2xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                    <Sliders className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white">Live Rate Limit Policy</h3>
+                    <p className="text-xs text-slate-400">Updates applied in Redis immediately with zero downtime</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Active:</span>
+                  <span className="text-xs font-mono font-bold text-indigo-400 px-2 py-0.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
+                    {data?.config?.maxTokens} cap / {data?.config?.refillRate} ref/s
+                  </span>
+                </div>
+              </div>
+
+              {configSuccess && (
+                <div className="mb-4 flex items-center gap-2 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>{configSuccess}</span>
+                </div>
+              )}
+
+              {configError && (
+                <div className="mb-4 flex items-center gap-2 p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{configError}</span>
+                </div>
+              )}
+
+              {/* Quick Presets */}
+              <div className="mb-5">
+                <p className="text-xs text-slate-400 mb-2 font-medium">Quick Policy Presets:</p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPreset(5, 0.5)}
+                    className="p-2 rounded-xl border border-slate-800 hover:border-indigo-500/40 bg-slate-950/40 text-left transition-colors cursor-pointer group"
+                  >
+                    <p className="text-[11px] font-bold text-slate-200 group-hover:text-indigo-400">Strict</p>
+                    <p className="text-[10px] text-slate-500">5 cap · 0.5/sec</p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPreset(10, 1)}
+                    className="p-2 rounded-xl border border-slate-800 hover:border-indigo-500/40 bg-slate-950/40 text-left transition-colors cursor-pointer group"
+                  >
+                    <p className="text-[11px] font-bold text-slate-200 group-hover:text-indigo-400">Standard</p>
+                    <p className="text-[10px] text-slate-500">10 cap · 1/sec</p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPreset(25, 3)}
+                    className="p-2 rounded-xl border border-slate-800 hover:border-indigo-500/40 bg-slate-950/40 text-left transition-colors cursor-pointer group"
+                  >
+                    <p className="text-[11px] font-bold text-slate-200 group-hover:text-indigo-400">Moderate</p>
+                    <p className="text-[10px] text-slate-500">25 cap · 3/sec</p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPreset(50, 10)}
+                    className="p-2 rounded-xl border border-slate-800 hover:border-indigo-500/40 bg-slate-950/40 text-left transition-colors cursor-pointer group"
+                  >
+                    <p className="text-[11px] font-bold text-slate-200 group-hover:text-indigo-400">Surge/Scale</p>
+                    <p className="text-[10px] text-slate-500">50 cap · 10/sec</p>
+                  </button>
+                </div>
+              </div>
+
+              <form onSubmit={handleSaveConfig} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Max Burst Capacity (Tokens)
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="5000"
+                    value={maxTokens}
+                    onChange={(e) => setMaxTokens(e.target.value)}
+                    required
+                    className="w-full px-3.5 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 text-sm focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all font-mono"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">Maximum token capacity a single IP can accumulate.</p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Token Refill Rate (Tokens / sec)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.1"
+                    max="500"
+                    value={refillRate}
+                    onChange={(e) => setRefillRate(e.target.value)}
+                    required
+                    className="w-full px-3.5 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-100 text-sm focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all font-mono"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">Number of tokens refilled back per elapsed second.</p>
+                </div>
+
+                <div className="sm:col-span-2 flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={savingConfig}
+                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30 transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    {savingConfig ? <Spinner className="h-3.5 w-3.5" /> : <SaveIcon className="w-3.5 h-3.5" />}
+                    Save Policy to Redis
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            {/* Redis Architecture & Health Details */}
+            <div className="bg-slate-900/80 backdrop-blur-sm border border-slate-800/80 rounded-2xl p-6 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    <Server className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white">Cluster Infrastructure</h3>
+                    <p className="text-xs text-slate-400">Upstash Serverless Redis engine</p>
+                  </div>
+                </div>
+
+                <div className="space-y-3 text-xs">
+                  <div className="flex items-center justify-between py-2 border-b border-slate-800/60">
+                    <span className="text-slate-400">Connection</span>
+                    <span className="font-semibold text-emerald-400 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                      Live / Responsive
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between py-2 border-b border-slate-800/60">
+                    <span className="text-slate-400">Ping Latency</span>
+                    <span className="font-mono font-semibold text-slate-200">{data?.pingMs ?? 0} ms</span>
+                  </div>
+                  <div className="flex items-center justify-between py-2 border-b border-slate-800/60">
+                    <span className="text-slate-400">Algorithm</span>
+                    <span className="font-semibold text-slate-200">Atomic Token Bucket (Lua)</span>
+                  </div>
+                  <div className="flex items-center justify-between py-2 border-b border-slate-800/60">
+                    <span className="text-slate-400">Protected Routes</span>
+                    <span className="font-semibold text-slate-200">Auth & Event Registration</span>
+                  </div>
+                  <div className="flex items-center justify-between py-2">
+                    <span className="text-slate-400">Fail-Safe Mode</span>
+                    <span className="font-semibold text-indigo-400">Fail Open (SurgeShield)</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-[11px] text-slate-400">
+                <p className="flex items-center gap-1 text-slate-300 font-semibold mb-1">
+                  <Zap className="w-3.5 h-3.5 text-amber-400" /> Surge Protection Active
+                </p>
+                Requests exceeding the burst threshold automatically receive an HTTP 429 response with exact Retry-After headers.
+              </div>
+            </div>
+          </div>
+
+          {/* Active Client Token Buckets Table */}
+          <div className="bg-slate-900/80 backdrop-blur-sm border border-slate-800/80 rounded-2xl p-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
+              <div>
+                <h3 className="text-sm font-bold text-white">Active Client Token Buckets</h3>
+                <p className="text-xs text-slate-400">IPs currently consuming tokens and tracked in Redis</p>
+              </div>
+
+              <div className="relative w-full sm:w-64">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="Filter by client IP…"
+                  value={searchIp}
+                  onChange={(e) => setSearchIp(e.target.value)}
+                  className="w-full pl-9 pr-3 py-1.5 bg-slate-950/60 border border-slate-800 rounded-xl text-slate-200 text-xs focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+
+            {filteredBuckets.length === 0 ? (
+              <div className="text-center py-10 border border-dashed border-slate-800 rounded-xl text-slate-500 text-xs">
+                <ShieldCheck className="w-8 h-8 mx-auto mb-2 opacity-30 text-emerald-400" />
+                <p className="font-semibold text-slate-400">No active throttled buckets</p>
+                <p className="mt-0.5">All client buckets are either full or expired from Redis.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-slate-400 font-semibold">
+                      <th className="pb-3 px-3">Client IP</th>
+                      <th className="pb-3 px-3">Token Balance</th>
+                      <th className="pb-3 px-3">Remaining TTL</th>
+                      <th className="pb-3 px-3">Status</th>
+                      <th className="pb-3 px-3 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {filteredBuckets.map((bucket) => {
+                      const max = bucket.maxTokens || 10;
+                      const pct = Math.max(0, Math.min(100, (bucket.tokens / max) * 100));
+                      const isLow = bucket.tokens < 2;
+
+                      return (
+                        <tr key={bucket.key} className="hover:bg-slate-800/30 transition-colors">
+                          <td className="py-3 px-3 font-mono font-semibold text-slate-200">
+                            {bucket.ip}
+                          </td>
+                          <td className="py-3 px-3">
+                            <div className="flex items-center gap-2 max-w-xs">
+                              <div className="flex-1 bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">
+                                <div
+                                  className={`h-full rounded-full transition-all duration-300 ${
+                                    isLow ? 'bg-rose-500' : pct < 50 ? 'bg-amber-500' : 'bg-emerald-500'
+                                  }`}
+                                  style={{ width: `${pct}%` }}
+                                />
+                              </div>
+                              <span className="font-mono text-[11px] font-semibold text-slate-300 shrink-0">
+                                {bucket.tokens} / {max}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-3 px-3 text-slate-400 font-mono">
+                            {bucket.ttl}s
+                          </td>
+                          <td className="py-3 px-3">
+                            {bucket.isThrottled ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                                Throttled
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                Healthy
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 text-right">
+                            <button
+                              onClick={() => handleResetIp(bucket.ip)}
+                              disabled={resettingIp === bucket.ip}
+                              className="px-2.5 py-1 rounded-lg border border-slate-800 hover:border-indigo-500/40 text-slate-400 hover:text-indigo-400 hover:bg-indigo-500/10 transition-all cursor-pointer text-[11px] font-medium disabled:opacity-50"
+                            >
+                              {resettingIp === bucket.ip ? 'Resetting…' : 'Unblock / Reset'}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Recent Rate Limit Decision Log */}
+          <div className="bg-slate-900/80 backdrop-blur-sm border border-slate-800/80 rounded-2xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-sm font-bold text-white">Live Rate Limiting Activity Log</h3>
+                <p className="text-xs text-slate-400">Last 50 decisions captured directly from Redis</p>
+              </div>
+              <span className="text-[10px] font-mono text-slate-500">
+                {data?.recentLogs?.length ?? 0} events recorded
+              </span>
+            </div>
+
+            {(!data?.recentLogs || data.recentLogs.length === 0) ? (
+              <div className="text-center py-8 text-slate-500 text-xs">
+                No recent rate-limited calls recorded yet. Send requests to /user/login or /events/:id/register to see live traffic.
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                {data.recentLogs.map((log, idx) => (
+                  <div
+                    key={idx}
+                    className="flex items-center justify-between p-2.5 rounded-xl bg-slate-950/50 border border-slate-800/70 text-xs"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${
+                        log.allowed
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                          : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                      }`}>
+                        {log.allowed ? 'ALLOWED' : 'BLOCKED 429'}
+                      </span>
+                      <span className="font-mono font-semibold text-slate-200">{log.method} {log.route}</span>
+                      <span className="font-mono text-slate-500 text-[11px] hidden sm:inline">IP: {log.ip}</span>
+                    </div>
+
+                    <div className="flex items-center gap-3 text-slate-400 text-[11px]">
+                      <span>{log.remaining} tokens left</span>
+                      <span className="text-slate-600 font-mono">
+                        {log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : '—'}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SaveIcon({ className = "w-4 h-4" }) {
+  return (
+    <svg className={className} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+    </svg>
   );
 }
 
@@ -773,6 +1326,16 @@ export default function AdminPage({ user, onLogout, events, eventsLoading, event
             >
               <Activity className="w-3.5 h-3.5" /> Monitoring
             </button>
+            <button
+              onClick={() => setActiveTab('ratelimit')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'ratelimit'
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Shield className="w-3.5 h-3.5" /> Rate Limiter
+            </button>
           </div>
 
           <div className="flex items-center gap-3">
@@ -792,6 +1355,8 @@ export default function AdminPage({ user, onLogout, events, eventsLoading, event
 
         {activeTab === 'monitoring' ? (
           <MonitoringTab />
+        ) : activeTab === 'ratelimit' ? (
+          <RateLimiterTab />
         ) : (
           <>
             {/* Page Title */}
