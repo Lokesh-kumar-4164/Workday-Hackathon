@@ -9,6 +9,7 @@ import {
 } from '../controllers/eventControllers.js';
 import { registerForEventController } from '../controllers/registrationControllers.js';
 import { requireAdmin, requireAuth } from '../middleware/auth.js';
+import { rateLimiter } from '../middleware/rateLimit.js';
 
 const router = express.Router();
 
@@ -17,7 +18,7 @@ const router = express.Router();
 router.get('/', requireAuth, listEventsController);
 
 // User registers for an event
-router.post('/:id/register', requireAuth, registerForEventController);
+router.post('/:id/register', rateLimiter, requireAuth, registerForEventController);
 
 // ── Admin-only ───────────────────────────────────────────────
 // Create a new event
