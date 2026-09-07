@@ -1,4 +1,4 @@
-import { Counter, Histogram, register } from 'prom-client';
+import { Counter, Histogram, Gauge, register } from 'prom-client';
 import os from 'os';
 import { record as storeRecord } from '../services/metricsStore.js';
 
@@ -26,10 +26,58 @@ if (!global[INIT_KEY]) {
         labelNames: ['method', 'route', 'status_code', 'instance'],
         buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
     });
+
+    // ── Downstream Notification Resilience Metrics ──
+    global.__notificationAttemptsTotal = new Counter({
+        name: 'notification_attempts_total',
+        help: 'Total number of downstream notification dispatch attempts',
+    });
+
+    global.__notificationSuccessTotal = new Counter({
+        name: 'notification_success_total',
+        help: 'Total number of successful downstream notifications delivered',
+    });
+
+    global.__notificationFailuresTotal = new Counter({
+        name: 'notification_failures_total',
+        help: 'Total number of failed downstream notification attempts',
+        labelNames: ['reason'],
+    });
+
+    global.__notificationRetriesTotal = new Counter({
+        name: 'notification_retries_total',
+        help: 'Total number of notification retry attempts executed by worker',
+    });
+
+    global.__notificationTimeoutsTotal = new Counter({
+        name: 'notification_timeouts_total',
+        help: 'Total number of downstream notification requests that timed out',
+    });
+
+    global.__downstreamEmailLatencySeconds = new Histogram({
+        name: 'downstream_email_latency_seconds',
+        help: 'Downstream email service request latency in seconds',
+        buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10],
+    });
+
+    global.__circuitBreakerStateGauge = new Gauge({
+        name: 'circuit_breaker_state',
+        help: 'Circuit breaker state (0=CLOSED, 1=HALF-OPEN, 2=OPEN)',
+        labelNames: ['service'],
+    });
 }
 
 const httpRequestsTotal          = global.__httpRequestsTotal;
 const httpRequestDurationSeconds = global.__httpRequestDurationSeconds;
+
+export const notificationAttemptsTotal      = global.__notificationAttemptsTotal;
+export const notificationSuccessTotal       = global.__notificationSuccessTotal;
+export const notificationFailuresTotal      = global.__notificationFailuresTotal;
+export const notificationRetriesTotal       = global.__notificationRetriesTotal;
+export const notificationTimeoutsTotal      = global.__notificationTimeoutsTotal;
+export const downstreamEmailLatencySeconds  = global.__downstreamEmailLatencySeconds;
+export const circuitBreakerStateGauge       = global.__circuitBreakerStateGauge;
+
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 /**
