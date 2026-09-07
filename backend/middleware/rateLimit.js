@@ -1,11 +1,33 @@
 import redis from "../config/redis.js";
 
-const MAX_TOKENS =
-    Number(process.env.RATE_LIMIT_MAX_TOKENS) || 10;
+const DEFAULT_MAX_TOKENS = Number(process.env.RATE_LIMIT_MAX_TOKENS) || 10;
+const DEFAULT_REFILL_RATE = Number(process.env.RATE_LIMIT_REFILL_RATE) || 1;
 
-const REFILL_RATE =
-    Number(process.env.RATE_LIMIT_REFILL_RATE) || 1;
+// In-memory cache for dynamic rate limit config to avoid extra roundtrips on every request
+let cachedConfig = {
+    maxTokens: DEFAULT_MAX_TOKENS,
+    refillRate: DEFAULT_REFILL_RATE,
+    lastFetched: 0,
+};
 
+export async function getEffectiveRateLimitConfig() {
+    const now = Date.now();
+    // Cache config for 5 seconds
+    if (now - cachedConfig.lastFetched < 5000) {
+        return cachedConfig;
+    }
+
+    try {
+        const config = await redis.hgetall("ratelimit:config");
+        const maxTokens = Number(config?.maxTokens) || DEFAULT_MAX_TOKENS;
+        const refillRate = Number(config?.refillRate) || DEFAULT_REFILL_RATE;
+        cachedConfig = { maxTokens, refillRate, lastFetched: now };
+    } catch (err) {
+        console.error("[RateLimit] Failed to fetch dynamic config from Redis:", err);
+    }
+
+    return cachedConfig;
+}
 
 // Atomic Token Bucket Lua script
 const TOKEN_BUCKET_SCRIPT = `
@@ -42,15 +64,11 @@ local retry_after = 0
 
 -- Token available
 if tokens >= 1 then
-
     tokens = tokens - 1
     allowed = 1
-
 else
-
     -- No token available
     allowed = 0
-
     local needed = 1 - tokens
 
     retry_after = math.ceil(
@@ -60,7 +78,6 @@ else
     if retry_after < 1 then
         retry_after = 1
     end
-
 end
 
 -- Save state
@@ -89,85 +106,68 @@ return {
 }
 `;
 
-
 export async function rateLimiter(req, res, next) {
-
     try {
-
         const ip =
             req.ip ||
             req.socket?.remoteAddress ||
             "unknown";
 
         const key = `rate_limit:${ip}`;
-
-        // Use milliseconds converted to seconds
-        // so refill calculation can be more precise.
         const now = Date.now() / 1000;
 
-        console.log(
-            `[RateLimit] ${req.method} ${req.originalUrl} | IP: ${ip}`
-        );
+        const config = await getEffectiveRateLimitConfig();
+        const maxTokens = config.maxTokens;
+        const refillRate = config.refillRate;
 
         const result = await redis.eval(
             TOKEN_BUCKET_SCRIPT,
             [key],
             [
-                String(MAX_TOKENS),
-                String(REFILL_RATE),
+                String(maxTokens),
+                String(refillRate),
                 String(now)
             ]
         );
-
-        console.log("[RateLimit] Redis result:", result);
 
         const allowed = Number(result[0]);
         const remaining = Number(result[1]);
         const retryAfter = Number(result[2]);
 
+        // Background analytics recording in Redis (non-blocking)
+        Promise.allSettled([
+            redis.incr("ratelimit:stats:total"),
+            allowed === 1 ? redis.incr("ratelimit:stats:allowed") : redis.incr("ratelimit:stats:blocked"),
+            redis.lpush("ratelimit:logs", JSON.stringify({
+                ip,
+                method: req.method,
+                route: req.originalUrl || req.url,
+                allowed: allowed === 1,
+                remaining: Math.max(0, remaining),
+                retryAfter: allowed === 1 ? 0 : (retryAfter || 1),
+                timestamp: Date.now(),
+            })),
+            redis.ltrim("ratelimit:logs", 0, 49),
+        ]).catch(() => {});
+
         // Headers
-        res.setHeader(
-            "X-RateLimit-Limit",
-            String(MAX_TOKENS)
-        );
+        res.setHeader("X-RateLimit-Limit", String(maxTokens));
+        res.setHeader("X-RateLimit-Remaining", String(Math.max(0, remaining)));
 
-        res.setHeader(
-            "X-RateLimit-Remaining",
-            String(Math.max(0, remaining))
-        );
-
-        // Request allowed
         if (allowed === 1) {
-
-            console.log(
-                `[RateLimit] ALLOWED | Remaining: ${remaining}`
-            );
-
             return next();
         }
 
-        // Request blocked
-        console.log(
-            `[RateLimit] BLOCKED | Retry after: ${retryAfter}s`
-        );
-
-        res.setHeader(
-            "Retry-After",
-            String(retryAfter || 1)
-        );
+        res.setHeader("Retry-After", String(retryAfter || 1));
 
         return res.status(429).json({
             success: false,
-            message: "Too many requests. Please try again later."
+            message: "Too many requests. Please try again later.",
+            retryAfter: retryAfter || 1,
         });
 
     } catch (error) {
-
-        console.error(
-            "[RateLimit] Redis error:",
-            error
-        );
-
+        console.error("[RateLimit] Redis error:", error);
         // SurgeShield: fail open
         return next();
     }
