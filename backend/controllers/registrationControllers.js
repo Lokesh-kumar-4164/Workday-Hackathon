@@ -1,6 +1,7 @@
 import { and, eq, gt, sql } from 'drizzle-orm';
 import { db } from '../config/db.js';
 import { eventsTable, registrationsTable } from '../config/schemas.js';
+import { enqueueRegistrationNotification } from '../services/notificationQueue.js';
 
 /* ─────────────────────────────────────────────
    POST /events/:id/register
@@ -63,12 +64,27 @@ export const registerForEventController = async (req, res) => {
             return res.status(409).json({ message: 'Sorry, this event just became fully booked.' });
         }
 
-        // 6. Insert registration record
+        // 6. Insert registration record into PostgreSQL (authoritative source of truth)
         const [registration] = await db
             .insert(registrationsTable)
             .values({ userId, eventId })
             .returning();
 
+        // 7. Fire-and-forget notification enqueue
+        //    Registration success must NEVER depend on BullMQ or email delivery.
+        //    PostgreSQL commit is final regardless of downstream status.
+        enqueueRegistrationNotification({
+            registrationId: registration.id,
+            userId,
+            eventId,
+            userEmail: req.user?.email,
+            userName: req.user?.name,
+            eventTitle: event.title,
+        }).catch((err) => {
+            console.error('[Registration] Failed to enqueue email notification (non-fatal):', err.message);
+        });
+
+        // 8. Return HTTP 201 Success immediately
         return res.status(201).json({
             message: 'Registration successful!',
             registration,
@@ -83,3 +99,4 @@ export const registerForEventController = async (req, res) => {
         return res.status(500).json({ message: 'Registration failed. Please try again.' });
     }
 };
+
